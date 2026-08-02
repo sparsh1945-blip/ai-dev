@@ -1,4 +1,3 @@
-import os
 import uuid
 import threading
 import time
@@ -20,6 +19,21 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ytdl")
  
 COOKIES_FILE = os.environ.get("COOKIES_FILE_PATH", "/etc/secrets/cookies.txt")
+ 
+# Fallback: if a base64-encoded cookies file is provided via env var,
+# decode it to disk. Useful when Render's Secret File mounting isn't
+# behaving as expected — env vars are simpler and always available.
+_COOKIES_B64 = os.environ.get("COOKIES_B64")
+if _COOKIES_B64 and not os.path.exists(COOKIES_FILE):
+    import base64
+    try:
+        FALLBACK_COOKIES_PATH = "/app/cookies_from_env.txt"
+        with open(FALLBACK_COOKIES_PATH, "wb") as f:
+            f.write(base64.b64decode(_COOKIES_B64))
+        COOKIES_FILE = FALLBACK_COOKIES_PATH
+        logging.getLogger("ytdl").info("Loaded cookies from COOKIES_B64 env var.")
+    except Exception as e:
+        logging.getLogger("ytdl").warning(f"Failed to decode COOKIES_B64: {e}")
  
 # Log at startup whether the cookies file is actually present and looks valid
 if os.path.exists(COOKIES_FILE):
@@ -144,7 +158,11 @@ def health():
 @app.route("/debug")
 def debug():
     exists = os.path.exists(COOKIES_FILE)
-    info = {"cookies_path": COOKIES_FILE, "cookies_found": exists}
+    info = {
+        "cookies_path": COOKIES_FILE,
+        "cookies_found": exists,
+        "source": "env_var_b64" if COOKIES_FILE.endswith("cookies_from_env.txt") else "secret_file",
+    }
     if exists:
         try:
             with open(COOKIES_FILE, "r") as f:
