@@ -1,4 +1,3 @@
-
 import os
 import uuid
 import threading
@@ -15,22 +14,43 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 # Optional cookies file exported from a logged-in browser (Netscape format).
 # Mount it into the container at this path to fix "Sign in to confirm you're
 # not a bot" errors. See README notes for how to export one.
-COOKIES_FILE = "/app/cookies.txt"
+import logging
+ 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("ytdl")
+ 
+COOKIES_FILE = os.environ.get("COOKIES_FILE_PATH", "/etc/secrets/cookies.txt")
+ 
+# Log at startup whether the cookies file is actually present and looks valid
+if os.path.exists(COOKIES_FILE):
+    try:
+        with open(COOKIES_FILE, "r") as f:
+            first_line = f.readline().strip()
+            line_count = sum(1 for _ in f) + 1
+        looks_valid = first_line.startswith("# Netscape HTTP Cookie File") or first_line.startswith("# HTTP Cookie File")
+        logger.info(f"cookies.txt found at {COOKIES_FILE} ({line_count} lines). Valid Netscape header: {looks_valid}")
+    except Exception as e:
+        logger.warning(f"cookies.txt found but couldn't be read: {e}")
+else:
+    logger.warning(f"No cookies file found at {COOKIES_FILE} — running without authentication.")
  
  
 def base_ydl_opts():
     opts = {
         "noplaylist": True,
         "quiet": True,
-        # Pretending to be the Android client often sidesteps the bot check
-        # because it uses a different, less-restricted player endpoint.
-        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+        # Try multiple player clients in order; some bypass the bot check
+        # more reliably than others depending on YouTube's current rollout.
+        "extractor_args": {"youtube": {"player_client": ["tv", "android", "web"]}},
         "http_headers": {
             "User-Agent": "com.google.android.youtube/19.29.37 (Linux; U; Android 11) gzip"
         },
     }
     if os.path.exists(COOKIES_FILE):
         opts["cookiefile"] = COOKIES_FILE
+        logger.info("Using cookies file for this request.")
+    else:
+        logger.info("No cookies file available for this request.")
     return opts
  
 # Remove files older than 30 minutes so the container doesn't fill up disk
@@ -88,6 +108,7 @@ def download():
             info = ydl.extract_info(url, download=True)
             title = info.get("title", "download")
     except Exception as e:
+        logger.error(f"yt-dlp failed for url={url}: {e}")
         return jsonify({"error": f"Download failed: {str(e)}"}), 500
  
     # Find the produced file (extension may differ from what we guessed)
@@ -118,6 +139,22 @@ def download():
 @app.route("/health")
 def health():
     return jsonify({"status": "ok"})
+ 
+ 
+@app.route("/debug")
+def debug():
+    exists = os.path.exists(COOKIES_FILE)
+    info = {"cookies_path": COOKIES_FILE, "cookies_found": exists}
+    if exists:
+        try:
+            with open(COOKIES_FILE, "r") as f:
+                first_line = f.readline().strip()
+                line_count = sum(1 for _ in f) + 1
+            info["line_count"] = line_count
+            info["valid_header"] = first_line.startswith("# Netscape HTTP Cookie File") or first_line.startswith("# HTTP Cookie File")
+        except Exception as e:
+            info["read_error"] = str(e)
+    return jsonify(info)
  
  
 if __name__ == "__main__":
